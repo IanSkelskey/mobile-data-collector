@@ -4,70 +4,10 @@ import { appMode, currentSessionData } from '../utils/jotai';
 import { db } from '../index';
 import { collection, getDocsFromCache, query, where } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'framer-motion';
+import RecaptureHistoryModal from './RecaptureHistoryModal';
+import toeCodeModel from '../utils/toeCodeModel';
 
-const footOptions = ['A', 'B', 'C', 'D'];
-const toeOptions = ['1', '2', '3', '4', '5'];
-
-const getToeCodePairs = (code) => {
-    const pairs = [];
-    for (let index = 0; index < code.length; index += 2) {
-        pairs.push({
-            foot: code.charAt(index),
-            toe: code.charAt(index + 1),
-            toeNumber: Number(code.charAt(index + 1)),
-            pair: code.slice(index, index + 2),
-        });
-    }
-    return pairs;
-};
-
-const getCanonicalToeCode = (code) => {
-    if (!code || code.length % 2) return code;
-    const pairs = getToeCodePairs(code);
-    const hasInvalidPair = pairs.some(
-        ({ foot, toe }) => !footOptions.includes(foot) || !toeOptions.includes(toe)
-    );
-    if (hasInvalidPair) return code;
-
-    return pairs
-        .sort((first, second) => {
-            if (first.foot === second.foot) return first.toeNumber - second.toeNumber;
-            return first.foot < second.foot ? -1 : 1;
-        })
-        .map(({ pair }) => pair)
-        .join('');
-};
-
-const getToeCodeValidationMessage = (code) => {
-    if (code.length < 2) return 'Toe Clip Code needs to be at least 2 characters long';
-    if (code.length % 2) return 'Toe Clip Code must have an even number of characters';
-
-    const pairs = getToeCodePairs(code);
-    const clippedToes = new Set();
-    const previousToeByFoot = {};
-    let previousFoot = '';
-
-    for (const { foot, toe, toeNumber, pair } of pairs) {
-        if (!footOptions.includes(foot) || !toeOptions.includes(toe)) {
-            return 'Toe Clip Code contains an invalid foot or toe number';
-        }
-        if (previousFoot && foot < previousFoot) {
-            return 'Toe Clip Code letters must be in alphabetical order';
-        }
-        if (clippedToes.has(pair)) {
-            return 'Toe Clip Code cannot include the same toe twice';
-        }
-        if (previousToeByFoot[foot] !== undefined && toeNumber <= previousToeByFoot[foot]) {
-            return 'Toe numbers on the same foot must be in ascending order';
-        }
-
-        clippedToes.add(pair);
-        previousToeByFoot[foot] = toeNumber;
-        previousFoot = foot;
-    }
-
-    return '';
-};
+const { footOptions, toeOptions } = toeCodeModel;
 
 export default function ToeCodeInput({
     toeCode,
@@ -76,17 +16,7 @@ export default function ToeCodeInput({
     isRecapture,
     setIsRecapture,
 }) {
-    const [selected, setSelected] = useState({
-        a: false,
-        b: false,
-        c: false,
-        d: false,
-        1: false,
-        2: false,
-        3: false,
-        4: false,
-        5: false,
-    });
+    const [selected, setSelected] = useState(toeCodeModel.getInitialSelection());
     const [errorMsg, setErrorMsg] = useState();
     const [isValid, setIsValid] = useState(false);
     const currentData = useAtomValue(currentSessionData);
@@ -128,18 +58,10 @@ export default function ToeCodeInput({
         clearTimeout(keypadHintTimerRef.current);
     }, [toeCode]);
 
-    const maxToeCodeLength = 16;
+    const maxToeCodeLength = toeCodeModel.maxLength;
 
-    const footLetters = toeCode.match(/[A-D]/g) ?? [];
-    const hasRepeatedFoot = new Set(footLetters).size !== footLetters.length;
-    const hasCriticalToe = toeCode.includes('C4') || toeCode.includes('D4');
-    const hasUnusualPattern = hasRepeatedFoot || hasCriticalToe;
-    const unusualPatternDetail =
-        hasRepeatedFoot && hasCriticalToe
-            ? 'more than one toe on a foot, and a C4/D4 toe that is important to survival'
-            : hasCriticalToe
-            ? 'a C4 or D4 toe, which is important to survival'
-            : 'more than one toe on a foot';
+    const { hasUnusualPattern, detail: unusualPatternDetail } =
+        toeCodeModel.getUnusualPattern(toeCode);
     const statusMessage = keypadHint
         ? keypadHint
         : !toeCode
@@ -169,28 +91,10 @@ export default function ToeCodeInput({
         ? 'border-green-700 bg-green-50 text-green-800'
         : 'border-black/30 bg-black/5 text-black/70';
 
-    const formattedToeCodes = toeCode
-        ? toeCode.split('').reduce((total, current, index, array) => {
-              if (index % 2 && index < array.length - 1) {
-                  return `${total}${current}-`;
-              } else {
-                  return `${total}${current}`;
-              }
-          })
-        : 'EX: A1-B2-C3';
+    const formattedToeCodes = toeCodeModel.formatForDisplay(toeCode);
 
     const resetSelected = () => {
-        setSelected({
-            a: false,
-            b: false,
-            c: false,
-            d: false,
-            1: false,
-            2: false,
-            3: false,
-            4: false,
-            5: false,
-        });
+        setSelected(toeCodeModel.getInitialSelection());
     };
 
     const handleToeCodeModalOpen = () => {
@@ -238,7 +142,7 @@ export default function ToeCodeInput({
         );
         const toeCodesArray = [];
         lizardSnapshot.docs.forEach((document) => {
-            toeCodesArray.push(getCanonicalToeCode(document.data().toeClipCode));
+            toeCodesArray.push(toeCodeModel.getCanonicalCode(document.data().toeClipCode));
         });
         console.log(toeCodesArray);
         const toeCodesTemplateSnapshot = await getDocsFromCache(
@@ -286,7 +190,7 @@ export default function ToeCodeInput({
             setErrorMsg('Select a species before entering a toe-clip code');
             return;
         }
-        const validationMessage = getToeCodeValidationMessage(toeCode);
+        const validationMessage = toeCodeModel.getValidationMessage(toeCode);
         if (validationMessage) {
             setIsCheckingValidity(false);
             setIsValid(false);
@@ -295,7 +199,7 @@ export default function ToeCodeInput({
             setIsCheckingValidity(true);
             setIsValid(false);
             setErrorMsg();
-            const canonicalToeCode = getCanonicalToeCode(toeCode);
+            const canonicalToeCode = toeCodeModel.getCanonicalCode(toeCode);
             const collectionName =
                 environment === 'live'
                     ? `${currentData.project.replace(/\s/g, '')}Data`
@@ -310,7 +214,9 @@ export default function ToeCodeInput({
             if (validationRequestId !== validationRequestRef.current) return;
             setIsCheckingValidity(false);
             const matchingLizardEntries = lizardSnapshot.docs.filter((document) => {
-                return getCanonicalToeCode(document.data().toeClipCode) === canonicalToeCode;
+                return (
+                    toeCodeModel.getCanonicalCode(document.data().toeClipCode) === canonicalToeCode
+                );
             });
             if (isRecapture) {
                 if (matchingLizardEntries.length > 0) {
@@ -345,7 +251,7 @@ export default function ToeCodeInput({
                 }
                 if (!Number(toeCode.charAt(toeCode.length - 1))) {
                     const nextToeCode = `${toeCode}${source}`;
-                    const validationMessage = getToeCodeValidationMessage(nextToeCode);
+                    const validationMessage = toeCodeModel.getValidationMessage(nextToeCode);
                     if (validationMessage) {
                         showKeypadHint(validationMessage);
                         return;
@@ -375,10 +281,10 @@ export default function ToeCodeInput({
             }
         } else if (source === 'backspace') {
             setToeCode(toeCode.substring(0, toeCode.length - 1));
-            resetSelected();
-            if (!Number(toeCode.charAt(toeCode.length - 2)) && toeCode.charAt(toeCode.length - 2)) {
-                setSelected({ ...selected, [toeCode.charAt(toeCode.length - 2)]: true });
-            }
+            const previousCharacter = toeCode.charAt(toeCode.length - 2);
+            const previousLetter =
+                previousCharacter && !Number(previousCharacter) ? previousCharacter : '';
+            setSelected(toeCodeModel.getInitialSelection(previousLetter));
         }
     };
 
@@ -396,102 +302,36 @@ export default function ToeCodeInput({
         );
         const lizardEntriesSnapshot = await getDocsFromCache(q);
         let tempArray = [];
-        const canonicalToeCode = getCanonicalToeCode(toeCode);
+        const canonicalToeCode = toeCodeModel.getCanonicalCode(toeCode);
         for (const doc of lizardEntriesSnapshot.docs) {
-            if (getCanonicalToeCode(doc.data().toeClipCode) !== canonicalToeCode) continue;
+            if (toeCodeModel.getCanonicalCode(doc.data().toeClipCode) !== canonicalToeCode)
+                continue;
             console.log(doc.data());
             tempArray.push(doc.data());
         }
-        // for testing scrollability of the table
-        // for (let i = 0; i < 50; i++) {
-        //     tempArray.push(tempArray[0])
-        // }
+        // Chronological order; entries with missing/unparseable dates sort first.
+        const entryTime = (entry) => {
+            const time = new Date(entry.dateTime).getTime();
+            return Number.isNaN(time) ? 0 : time;
+        };
+        tempArray.sort((a, b) => entryTime(a) - entryTime(b));
         setPreviousLizardEntries(tempArray);
         setRecaptureHistoryIsOpen(true);
         setHistoryButtonText('History');
     };
-
-    const recaptureHistoryContainerVariant = {
-        hidden: {
-            opacity: 0,
-        },
-        visible: {
-            opacity: 1,
-        },
-    };
-
-    const recaptureHistoryVariant = {
-        hidden: {
-            scale: 0,
-            y: '50%',
-        },
-        visible: {
-            scale: [0, 1],
-            y: ['60%', '0%'],
-            transition: {
-                type: 'spring',
-                duration: 0.25,
-            },
-        },
-    };
-
-    const lizardHistoryLabelArray = [
-        'Date',
-        'Array',
-        'Recapture',
-        'SVL',
-        'VTL',
-        'OTL',
-        'Mass',
-        'Sex',
-        'Dead',
-        'Comments',
-    ];
-
-    const lizardHistoryLabelKeys = [
-        'dateTime',
-        'array',
-        'recapture',
-        'svlMm',
-        'vtlMm',
-        'otlMm',
-        'massG',
-        'sex',
-        'dead',
-        'comments',
-    ];
 
     return (
         <AnimatePresence>
             <motion.div>
                 <AnimatePresence>
                     {recaptureHistoryIsOpen && (
-                        <motion.div
-                            className="absolute h-screen w-screen top-0 left-0 bg-black/20 z-50"
-                            variants={recaptureHistoryContainerVariant}
-                            initial="hidden"
-                            animate="visible"
-                            exit="hidden"
-                        >
-                            <PortraitTable
-                                recaptureHistoryVariant={recaptureHistoryVariant}
-                                currentData={currentData}
-                                speciesCode={speciesCode}
-                                toeCode={toeCode}
-                                lizardHistoryLabelArray={lizardHistoryLabelArray}
-                                previousLizardEntries={previousLizardEntries}
-                                setRecaptureHistoryIsOpen={setRecaptureHistoryIsOpen}
-                            />
-                            <LandscapeTable
-                                currentData={currentData}
-                                speciesCode={speciesCode}
-                                toeCode={toeCode}
-                                lizardHistoryLabelArray={lizardHistoryLabelArray}
-                                previousLizardEntries={previousLizardEntries}
-                                lizardHistoryLabelKeys={lizardHistoryLabelKeys}
-                                setRecaptureHistoryIsOpen={setRecaptureHistoryIsOpen}
-                            />
-                        </motion.div>
+                        <RecaptureHistoryModal
+                            currentData={currentData}
+                            speciesCode={speciesCode}
+                            toeCode={toeCode}
+                            previousLizardEntries={previousLizardEntries}
+                            onClose={() => setRecaptureHistoryIsOpen(false)}
+                        />
                     )}
                 </AnimatePresence>
 
@@ -663,280 +503,6 @@ export default function ToeCodeInput({
         </AnimatePresence>
     );
 }
-
-const Comments = ({ commentText }) => {
-    const [isExpanded, setIsExpanded] = useState(false);
-    return (
-        <motion.div className="" onClick={() => setIsExpanded(!isExpanded)}>
-            <AnimatePresence>
-                {isExpanded && (
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{
-                            opacity: 1,
-                            y: '-100%',
-                        }}
-                        exit={{
-                            opacity: 0,
-                            y: '-50%',
-                            transition: {
-                                y: {
-                                    duration: 0.3,
-                                },
-                                opacity: {
-                                    duration: 0.2,
-                                },
-                            },
-                        }}
-                        className="absolute border-2 border-asu-maroon z-10 bg-white rounded-sm p-1"
-                    >
-                        <p>{commentText}</p>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-            <p>{commentText.length > 5 ? `${commentText.slice(0, 5)}...` : commentText}</p>
-        </motion.div>
-    );
-};
-
-const PortraitTable = ({
-    recaptureHistoryVariant,
-    currentData,
-    speciesCode,
-    toeCode,
-    lizardHistoryLabelArray,
-    previousLizardEntries,
-    setRecaptureHistoryIsOpen,
-}) => {
-    return (
-        <motion.div
-            className="absolute h-[calc(100%-2.5rem)] w-[calc(100%-2.5rem)] shadow-2xl top-0 left-0 bg-white border-2 border-asu-maroon rounded-2xl m-5 p-1 flex flex-col items-center landscape:hidden"
-            variants={recaptureHistoryVariant}
-            initial="hidden"
-            animate="visible"
-            exit="hidden"
-        >
-            <h1 className="text-3xl">Recapture History</h1>
-
-            <motion.div className="flex items-center space-x-2 justify-center w-full border-black border-0 justify-items-center max-w-md">
-                <motion.div className="flex w-16 flex-col items-center">
-                    <p className="text-sm text-black/75 italic leading-none">Site</p>
-                    <motion.div className="w-full bg-black h-[1px]" />
-                    <p className="text-md text-black font-semibold leading-tight">
-                        {currentData.site}
-                    </p>
-                </motion.div>
-                <motion.div className="flex w-20 flex-col items-center">
-                    <p className="text-sm text-black/75 italic leading-none">Species</p>
-                    <motion.div className="w-full bg-black h-[1px]" />
-                    <p className="text-md text-black font-semibold leading-tight">
-                        {speciesCode ?? 'N/A'}
-                    </p>
-                </motion.div>
-                <motion.div className="flex w-28 flex-col items-center">
-                    <p className="text-sm text-black/75 italic leading-none">Toe Clip Code</p>
-                    <motion.div className="w-full bg-black h-[1px]" />
-                    <p className="text-md text-black font-semibold leading-tight">{toeCode}</p>
-                </motion.div>
-            </motion.div>
-
-            <motion.div className="flex flex-row border-2 border-black w-full h-full mb-2 rounded-xl shadow-lg">
-                <table className="text-left text-sm h-full border-r-[2px] border-black table-auto border-collapse">
-                    <thead>
-                        {lizardHistoryLabelArray.map((item, index, array) => {
-                            return (
-                                <tr key={item}>
-                                    <td
-                                        className={`${
-                                            index < array.length - 1
-                                                ? 'border-b border-black whitespace-nowrap'
-                                                : ''
-                                        }`}
-                                    >
-                                        {item}
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </thead>
-                </table>
-                <div className="overflow-x-auto">
-                    <table className="text-center text-sm h-full border-black table-auto border-collapse">
-                        <tbody>
-                            {lizardHistoryLabelArray.map((item, labelIndex, array) => {
-                                let key = '';
-                                if (item === 'Date') key = 'dateTime';
-                                if (item === 'Mass') key = 'massG';
-                                if (item === 'SVL') key = 'svlMm';
-                                if (item === 'OTL') key = 'otlMm';
-                                if (item === 'VTL') key = 'vtlMm';
-                                if (item === 'Recapture') key = 'recapture';
-                                if (item === 'Dead') key = 'dead';
-                                if (item === 'Hatchling') key = 'hatchling';
-                                if (item === 'Regen Tail') key = 'regenTail';
-                                if (item === 'Array') key = 'array';
-                                if (item === 'Sex') key = 'sex';
-                                if (item === 'Comments') key = 'comments';
-                                let tdArray = [];
-                                for (let i = 0; i < previousLizardEntries.length; i++) {
-                                    let itemToDisplay = '';
-                                    if (key === 'dateTime') {
-                                        const date = new Date(
-                                            previousLizardEntries[i][key]
-                                        ).toLocaleDateString();
-                                        itemToDisplay = date;
-                                    } else {
-                                        itemToDisplay = previousLizardEntries[i][key] ?? 'N/A';
-                                        if (itemToDisplay === 'false') itemToDisplay = 'No';
-                                        if (itemToDisplay === 'true') itemToDisplay = 'Yes';
-                                    }
-
-                                    if (item === 'Comments') {
-                                        itemToDisplay = (
-                                            <Comments
-                                                commentText={previousLizardEntries[i][key] ?? 'N/A'}
-                                            />
-                                        );
-                                    }
-
-                                    if (i < previousLizardEntries.length - 1) {
-                                        tdArray.push(
-                                            <td
-                                                key={`${itemToDisplay}${i}`}
-                                                className={`${
-                                                    labelIndex < array.length - 1
-                                                        ? 'border-b border-r border-black'
-                                                        : 'border-r border-black'
-                                                }`}
-                                            >
-                                                {itemToDisplay}
-                                            </td>
-                                        );
-                                    } else {
-                                        tdArray.push(
-                                            <td
-                                                key={`${itemToDisplay}${i}`}
-                                                className={`${
-                                                    labelIndex < array.length - 1
-                                                        ? 'border-b border-black'
-                                                        : 'border-black'
-                                                }`}
-                                            >
-                                                {itemToDisplay}
-                                            </td>
-                                        );
-                                    }
-                                }
-                                return <tr key={`${labelIndex}label`}>{tdArray}</tr>;
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            </motion.div>
-
-            <button
-                className="border-2 text-xl border-asu-maroon rounded-xl w-1/2 px-4 py-1 mb-2 mt-auto"
-                onClick={() => setRecaptureHistoryIsOpen(false)}
-            >
-                Close
-            </button>
-        </motion.div>
-    );
-};
-
-const LandscapeTable = ({
-    currentData,
-    speciesCode,
-    toeCode,
-    lizardHistoryLabelArray,
-    previousLizardEntries,
-    lizardHistoryLabelKeys,
-    setRecaptureHistoryIsOpen,
-}) => (
-    <motion.div className="absolute h-[calc(100%-2.5rem)] w-[calc(100%-2.5rem)] shadow-2xl top-0 left-0 bg-white border-2 border-asu-maroon rounded-2xl m-5 p-1 flex flex-col items-center portrait:hidden">
-        <h1 className="text-3xl">Recapture History</h1>
-
-        <motion.div className="flex items-center space-x-2 justify-center w-full border-black border-0 justify-items-center max-w-md">
-            <motion.div className="flex w-16 flex-col items-center">
-                <p className="text-sm text-black/75 italic leading-none">Site</p>
-                <motion.div className="w-full bg-black h-[1px]" />
-                <p className="text-md text-black font-semibold leading-tight">{currentData.site}</p>
-            </motion.div>
-            <motion.div className="flex w-20 flex-col items-center">
-                <p className="text-sm text-black/75 italic leading-none">Species</p>
-                <motion.div className="w-full bg-black h-[1px]" />
-                <p className="text-md text-black font-semibold leading-tight">
-                    {speciesCode ?? 'N/A'}
-                </p>
-            </motion.div>
-            <motion.div className="flex w-28 flex-col items-center">
-                <p className="text-sm text-black/75 italic leading-none">Toe Clip Code</p>
-                <motion.div className="w-full bg-black h-[1px]" />
-                <p className="text-md text-black font-semibold leading-tight">{toeCode}</p>
-            </motion.div>
-        </motion.div>
-
-        <motion.div className="border-2 border-black w-full h-full mb-2 rounded-xl shadow-lg overflow-y-auto">
-            <table className="text-center text-sm w-full table-auto border-collapse">
-                <thead>
-                    <tr>
-                        {lizardHistoryLabelArray.map((label, index, array) => (
-                            <td
-                                key={label}
-                                className={
-                                    index < array.length - 1
-                                        ? 'border-r-[1px] border-b-2 border-black'
-                                        : 'border-r-0 border-b-2 border-black'
-                                }
-                            >
-                                {label}
-                            </td>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody>
-                    {previousLizardEntries.map((entry, index, array) => {
-                        return (
-                            <tr key={index}>
-                                {lizardHistoryLabelKeys.map((key, index, array) => {
-                                    let itemToDisplay = entry[key] ?? 'N/A';
-                                    if (key === 'dateTime') {
-                                        const date = new Date(entry[key]).toLocaleDateString();
-                                        itemToDisplay = date;
-                                    }
-                                    if (itemToDisplay === 'false') {
-                                        itemToDisplay = 'No';
-                                    }
-                                    if (itemToDisplay === 'true') {
-                                        itemToDisplay = 'Yes';
-                                    }
-                                    return (
-                                        <td
-                                            key={`${itemToDisplay}${index}`}
-                                            className={
-                                                index < array.length - 1
-                                                    ? 'border-r-[1px] border-b-[1px] border-black'
-                                                    : 'border-b-[1px] border-black'
-                                            }
-                                        >
-                                            {itemToDisplay}
-                                        </td>
-                                    );
-                                })}
-                            </tr>
-                        );
-                    })}
-                </tbody>
-            </table>
-        </motion.div>
-        <button
-            className="border-2 text-xl border-asu-maroon rounded-xl w-1/2 px-4 py-1 mb-2 mt-auto"
-            onClick={() => setRecaptureHistoryIsOpen(false)}
-        >
-            Close
-        </button>
-    </motion.div>
-);
 
 function Button({ prompt, handler, isSelected }) {
     return (
