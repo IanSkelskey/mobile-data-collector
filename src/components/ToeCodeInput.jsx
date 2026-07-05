@@ -309,10 +309,12 @@ export default function ToeCodeInput({
             console.log(doc.data());
             tempArray.push(doc.data());
         }
-        // for testing scrollability of the table
-        // for (let i = 0; i < 50; i++) {
-        //     tempArray.push(tempArray[0])
-        // }
+        // Chronological order; entries with missing/unparseable dates sort first.
+        const entryTime = (entry) => {
+            const time = new Date(entry.dateTime).getTime();
+            return Number.isNaN(time) ? 0 : time;
+        };
+        tempArray.sort((a, b) => entryTime(a) - entryTime(b));
         setPreviousLizardEntries(tempArray);
         setRecaptureHistoryIsOpen(true);
         setHistoryButtonText('History');
